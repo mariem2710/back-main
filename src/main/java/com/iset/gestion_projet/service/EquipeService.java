@@ -3,21 +3,29 @@ package com.iset.gestion_projet.service;
 import com.iset.gestion_projet.DTOS.EquipeDTO;
 import com.iset.gestion_projet.DTOS.MembreDTO;
 import com.iset.gestion_projet.entity.Equipe;
+import com.iset.gestion_projet.entity.Role;
+import com.iset.gestion_projet.entity.StatutCompte;
+import com.iset.gestion_projet.entity.User;
 import com.iset.gestion_projet.repository.EquipeRepository;
-import com.iset.gestion_projet.repository.MembreRepository;
+import com.iset.gestion_projet.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class EquipeService {
 
     private final EquipeRepository equipeRepository;
-    private final MembreRepository membreRepository;
+    private final UserRepository   userRepository;
+
+    private static final List<Role> ROLES_TECHNIQUES =
+            List.of(Role.TECHNIQUE, Role.TECHNICIEN);
 
     public List<EquipeDTO> getAll() {
         return equipeRepository.findAll()
@@ -52,33 +60,41 @@ public class EquipeService {
         equipeRepository.deleteById(id);
     }
 
+    public List<User> getTechniciens(Long equipeId) {
+        Equipe equipe = equipeRepository.findById(equipeId)
+                .orElseThrow(() -> new RuntimeException("Équipe introuvable: " + equipeId));
+        return userRepository.findTechniciensByEquipeObj(
+                ROLES_TECHNIQUES, StatutCompte.ACCEPTE, equipe);
+    }
+
     @Transactional
     public Equipe findOrCreateBySysteme(String systeme) {
-        // 1. Try exact systemeAssocie match
         List<Equipe> bySysteme = equipeRepository.findBySystemeAssocieIgnoreCase(systeme);
         if (!bySysteme.isEmpty()) return bySysteme.get(0);
 
-        // 2. Try name contains
         List<Equipe> byNom = equipeRepository.findByNomContainingIgnoreCase(systeme);
         if (!byNom.isEmpty()) return byNom.get(0);
 
-        // 3. Create new
-        Equipe newEquipe = Equipe.builder()
+        log.info("Création équipe pour système: {}", systeme);
+        Equipe nouvelle = Equipe.builder()
                 .nom(systeme + " Team")
-                .systemeAssocie(systeme)
                 .description("Équipe générée automatiquement pour " + systeme)
+                .systemeAssocie(systeme)
                 .build();
-        return equipeRepository.save(newEquipe);
+        return equipeRepository.save(nouvelle);
     }
 
     private EquipeDTO toDTO(Equipe e) {
-        List<MembreDTO> membres = membreRepository.findByEquipe(e)
-                .stream().map(m -> MembreDTO.builder()
-                        .id(m.getId())
-                        .nom(m.getNom())
-                        .prenom(m.getPrenom())
-                        .email(m.getEmail())
-                        .role(m.getRole())
+        List<User> techniciens = userRepository.findTechniciensByEquipeObj(
+                ROLES_TECHNIQUES, StatutCompte.ACCEPTE, e);
+
+        List<MembreDTO> membres = techniciens.stream()
+                .map(u -> MembreDTO.builder()
+                        .id(u.getId())
+                        .nom(u.getNom())
+                        .prenom(u.getPrenom())
+                        .email(u.getEmail())
+                        .role(u.getRole() != null ? u.getRole().name() : null)
                         .equipeId(e.getId())
                         .equipeNom(e.getNom())
                         .build())

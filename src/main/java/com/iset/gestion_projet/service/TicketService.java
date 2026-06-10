@@ -282,7 +282,7 @@ public class TicketService {
         // Gestion sécurisée de la date limite
         LocalDateTime dateLimite = null;
         if (tache.getDateLimite() != null) {
-            dateLimite = tache.getDateLimite().atStartOfDay();
+            dateLimite = tache.getDateLimite();
         }
 
         return TacheResponse.builder()
@@ -291,12 +291,22 @@ public class TicketService {
                 .description(nullSafe(tache.getDescription(), ""))
                 .statut(tache.getStatut())
                 .priorite(tache.getPriorite())
-                .dateCreation(tache.getDateCreation())
-                .dateLimite(dateLimite)
+                .dateCreation(
+                        tache.getDateCreation() != null
+                                ? tache.getDateCreation().toLocalDate()
+                                : null
+                )
+
+                .dateLimite(
+                        tache.getDateLimite() != null
+                                ? tache.getDateLimite().toLocalDate()
+                                : null
+                )
                 .sousTicketId(tache.getSousTicket() != null ? tache.getSousTicket().getId() : null)
                 .sousTicketTitre(tache.getSousTicket() != null ? tache.getSousTicket().getTitre() : null)
                 .ticketId(tache.getSousTicket() != null && tache.getSousTicket().getTicket() != null
                         ? tache.getSousTicket().getTicket().getId() : null)
+                // ✅ Dans mapTache() — remplacer le bloc assignee par :
                 .assigneeId(getAssigneeId(tache))
                 .assigneeNom(getAssigneeNom(tache))
                 .assigneePrenom(getAssigneePrenom(tache))
@@ -352,38 +362,70 @@ public class TicketService {
         return value != null && !value.trim().isEmpty() ? value : defaultValue;
     }
 
+    // ✅ Remplacer ces 3 méthodes dans TicketService.java
+
     private Long getAssigneeId(Tache tache) {
-        if (tache.getAssigneA() != null) {
-            return tache.getAssigneA().getId();
-        }
-        if (tache.getAssignee() != null) {
-            return tache.getAssignee().getId();
-        }
-        return null;
+        return tache.getAssignee() != null
+                ? tache.getAssignee().getId()
+                : null;
     }
 
     private String getAssigneeNom(Tache tache) {
-        if (tache.getAssigneA() != null) {
-            return tache.getAssigneA().getNom();
-        }
-        if (tache.getAssignee() != null) {
-            return tache.getAssignee().getNom();
-        }
-        return null;
+        return tache.getAssignee() != null
+                ? tache.getAssignee().getNom()
+                : null;
     }
 
     private String getAssigneePrenom(Tache tache) {
-        if (tache.getAssigneA() != null) {
-            return tache.getAssigneA().getPrenom();
-        }
-        if (tache.getAssignee() != null) {
-            return tache.getAssignee().getPrenom();
-        }
-        return null;
+        return tache.getAssignee() != null
+                ? tache.getAssignee().getPrenom()
+                : null;
     }
 
     private Ticket findTicket(Long id) {
         return ticketRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Ticket introuvable : " + id));
     }
-}
+
+    // Dans TicketService.java
+    @Transactional(readOnly = true)
+    public Map<String, Object> getTicketProgression(Long id) {
+        Ticket ticket = findTicket(id);
+        List<SousTicket> sousTickets = sousTicketRepository.findByTicketId(id);
+
+        long totalTaches = 0;
+        long tachesFaites = 0;
+
+        for (SousTicket st : sousTickets) {
+            List<Tache> taches = tacheRepository.findBySousTicketId(st.getId());
+            totalTaches += taches.size();
+            tachesFaites += taches.stream()
+                    .filter(t -> t.getStatut() == Statut.Fait)
+                    .count();
+        }
+
+        double progression = totalTaches == 0 ? 0 : (tachesFaites * 100.0 / totalTaches);
+        double progressionArrondie = Math.round(progression * 10.0) / 10.0;
+
+        // ✅ FERMETURE AUTOMATIQUE DU TICKET À 100%
+        if (progressionArrondie >= 100.0 && ticket.getStatut() != Statut.TERMINE) {
+            log.info("🎉 Ticket #{} atteint 100% de progression - Fermeture automatique", id);
+            ticket.setStatut(Statut.TERMINE);
+            ticket.setDateMiseAJour(LocalDate.now());
+            ticketRepository.save(ticket);
+        }
+
+        return Map.of(
+                "ticketId", id,
+                "progression", progressionArrondie,
+                "totalTaches", totalTaches,
+                "tachesFaites", tachesFaites,
+                "estFerme", progressionArrondie >= 100.0
+        );
+    }
+    // ✅ Ajouter dans ticket.service.ts
+
+
+
+    }
+

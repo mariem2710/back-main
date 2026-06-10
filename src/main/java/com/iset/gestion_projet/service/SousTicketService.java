@@ -87,27 +87,45 @@ public class SousTicketService {
     private TacheResponse mapTacheToResponse(Tache tache) {
         if (tache == null) return null;
 
-        // Gestion sécurisée de la date limite
-        LocalDateTime dateLimite = null;
-        if (tache.getDateLimite() != null) {
-            dateLimite = tache.getDateLimite().atStartOfDay();
-        }
-
         return TacheResponse.builder()
                 .id(tache.getId())
                 .titre(tache.getTitre())
                 .description(tache.getDescription())
                 .priorite(tache.getPriorite())
                 .statut(tache.getStatut())
-                .dateCreation(tache.getDateCreation())
-                .dateLimite(dateLimite)
-                .assigneeId(tache.getAssignee() != null ? tache.getAssignee().getId() :
-                        (tache.getAssigneA() != null ? tache.getAssigneA().getId() : null))
-                .assigneeNom(tache.getAssignee() != null ? tache.getAssignee().getNom() :
-                        (tache.getAssigneA() != null ? tache.getAssigneA().getNom() : null))
+
+                .dateCreation(
+                        tache.getDateCreation() != null
+                                ? tache.getDateCreation().toLocalDate()
+                                : null
+                )
+
+                .dateLimite(
+                        tache.getDateLimite() != null
+                                ? tache.getDateLimite().toLocalDate()
+                                : null
+                )
+
+                .assigneeId(
+                        tache.getAssignee() != null
+                                ? tache.getAssignee().getId()
+                                : null
+                )
+
+                .assigneeNom(
+                        tache.getAssignee() != null
+                                ? tache.getAssignee().getNom()
+                                : null
+                )
+
+                .assigneePrenom(
+                        tache.getAssignee() != null
+                                ? tache.getAssignee().getPrenom()
+                                : null
+                )
+
                 .build();
     }
-
     private double calculerProgressionSousTicket(Long sousTicketId, List<Tache> taches) {
         if (taches == null || taches.isEmpty()) {
             return 0.0;

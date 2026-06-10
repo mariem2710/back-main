@@ -4,7 +4,6 @@ import com.iset.gestion_projet.DTOS.UserResponse;
 import com.iset.gestion_projet.Request.UserRequest;
 import com.iset.gestion_projet.entity.*;
 import com.iset.gestion_projet.repository.EquipeRepository;
-import com.iset.gestion_projet.repository.MembreRepository;
 import com.iset.gestion_projet.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -13,7 +12,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -21,13 +19,12 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class UserService {
 
-    private final UserRepository userRepository;
-    private final EmailService emailService;
-    private final PasswordEncoder passwordEncoder;
+    private final UserRepository   userRepository;
+    private final EmailService     emailService;
+    private final PasswordEncoder  passwordEncoder;
     private final EquipeRepository equipeRepository;
-    private final MembreRepository membreRepository;
 
-    // ── Shared mapper ──
+    // ── Mapper User → UserResponse ────────────────────────────────
     private UserResponse toResponse(User user) {
         return UserResponse.builder()
                 .id(user.getId())
@@ -41,12 +38,10 @@ public class UserService {
                 .build();
     }
 
-    /**
-     * Employee requests an account (no equipe, no password yet)
-     */
+    // ── Demande de compte (public) ────────────────────────────────
     @Transactional
     public UserResponse demanderCompte(UserRequest request) {
-        log.info("📝 Demande de création de compte pour: {}", request.getEmail());
+        log.info("Demande de compte pour: {}", request.getEmail());
 
         if (userRepository.findByEmail(request.getEmail()).isPresent()) {
             throw new RuntimeException("Cet email est déjà utilisé.");
@@ -60,18 +55,13 @@ public class UserService {
                 .statut(StatutCompte.EN_ATTENTE)
                 .build();
 
-        User saved = userRepository.save(user);
-        log.info("✅ Demande de compte créée pour: {}", saved.getEmail());
-
-        return toResponse(saved);
+        return toResponse(userRepository.save(user));
     }
 
-    /**
-     * ADMIN: creates User + Membre in the same equipe
-     */
+    // ── ADMIN: créer compte directement ──────────────────────────
     @Transactional
     public UserResponse creerCompte(UserRequest request) {
-        log.info("👤 ADMIN - Création de compte pour: {}", request.getEmail());
+        log.info("ADMIN - Création de compte pour: {}", request.getEmail());
 
         if (userRepository.findByEmail(request.getEmail()).isPresent()) {
             throw new RuntimeException("Cet email est déjà utilisé.");
@@ -86,7 +76,6 @@ public class UserService {
         Equipe equipe = equipeRepository.findById(request.getEquipeId())
                 .orElseThrow(() -> new RuntimeException("Équipe introuvable : " + request.getEquipeId()));
 
-        // 1. Create User (can login)
         User user = User.builder()
                 .nom(request.getNom())
                 .prenom(request.getPrenom())
@@ -96,30 +85,17 @@ public class UserService {
                 .statut(StatutCompte.ACCEPTE)
                 .equipe(equipe)
                 .build();
+
         userRepository.save(user);
-
-        // 2. Auto-create Membre in same equipe (gets AI task assignments)
-        Membre membre = Membre.builder()
-                .nom(request.getNom())
-                .prenom(request.getPrenom())
-                .email(request.getEmail())
-                .role(request.getRole() != null ? request.getRole().name() : "TECHNIQUE")
-                .statut(StatutCompte.ACCEPTE)  // Utilisation de l'enum directement
-                .equipe(equipe)
-                .build();
-        membreRepository.save(membre);
-
-        log.info("✅ Compte créé pour: {} avec équipe: {}", user.getEmail(), equipe.getNom());
+        log.info("Compte créé pour: {} avec équipe: {}", user.getEmail(), equipe.getNom());
 
         return toResponse(user);
     }
 
-    /**
-     * ADMIN: assign/change equipe of existing user + sync Membre
-     */
+    // ── ADMIN: assigner équipe ────────────────────────────────────
     @Transactional
     public UserResponse assignerEquipe(Long userId, Long equipeId) {
-        log.info("🔄 Assignation équipe pour utilisateur ID: {} -> équipe ID: {}", userId, equipeId);
+        log.info("Assignation équipe {} -> utilisateur {}", equipeId, userId);
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé."));
@@ -129,36 +105,13 @@ public class UserService {
         user.setEquipe(equipe);
         userRepository.save(user);
 
-        // Sync Membre equipe too
-        Optional<Membre> membreOpt = membreRepository.findByEmail(user.getEmail());
-        if (membreOpt.isPresent()) {
-            Membre membre = membreOpt.get();
-            membre.setEquipe(equipe);
-            membreRepository.save(membre);
-            log.info("✅ Équipe synchronisée pour le membre: {}", membre.getEmail());
-        } else {
-            // Create membre if doesn't exist
-            log.warn("⚠️ Membre non trouvé pour: {}, création automatique", user.getEmail());
-            Membre newMembre = Membre.builder()
-                    .nom(user.getNom())
-                    .prenom(user.getPrenom())
-                    .email(user.getEmail())
-                    .role(user.getRole() != null ? user.getRole().name() : "TECHNIQUE")
-                    .statut(user.getStatut())  // Utilisation de l'enum directement
-                    .equipe(equipe)
-                    .build();
-            membreRepository.save(newMembre);
-        }
-
         return toResponse(user);
     }
 
-    /**
-     * ADMIN: Accept user account and sync Membre with status ACCEPTE
-     */
+    // ── ADMIN: accepter compte ────────────────────────────────────
     @Transactional
     public UserResponse accepterCompte(Long id, String password) {
-        log.info("✅ Acceptation du compte utilisateur ID: {}", id);
+        log.info("Acceptation du compte ID: {}", id);
 
         User user = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé."));
@@ -167,29 +120,21 @@ public class UserService {
             throw new RuntimeException("Ce compte a déjà été traité.");
         }
 
-        // Update User
         user.setPassword(passwordEncoder.encode(password));
         user.setStatut(StatutCompte.ACCEPTE);
         userRepository.save(user);
 
-        // Sync Membre: create or update with status ACCEPTE
-        updateOrCreateMembre(user, StatutCompte.ACCEPTE);
-
-        // Send email
         emailService.sendAccountAcceptedEmail(
                 user.getEmail(), user.getNom(), user.getPrenom(), password);
 
-        log.info("✅ Compte utilisateur #{} accepté et membre synchronisé", id);
-
+        log.info("Compte #{} accepté", id);
         return toResponse(user);
     }
 
-    /**
-     * ADMIN: Refuse user account and sync Membre with status REFUSE
-     */
+    // ── ADMIN: refuser compte ─────────────────────────────────────
     @Transactional
     public UserResponse refuserCompte(Long id) {
-        log.info("❌ Refus du compte utilisateur ID: {}", id);
+        log.info("Refus du compte ID: {}", id);
 
         User user = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé."));
@@ -198,98 +143,44 @@ public class UserService {
             throw new RuntimeException("Ce compte a déjà été traité.");
         }
 
-        // Update User
         user.setStatut(StatutCompte.REFUSE);
         userRepository.save(user);
 
-        // Sync Membre: update status to REFUSE
-        updateOrCreateMembre(user, StatutCompte.REFUSE);
-
-        // Send email
         emailService.sendAccountRefusedEmail(
                 user.getEmail(), user.getPrenom(), user.getNom());
 
-        log.info("❌ Compte utilisateur #{} refusé et membre synchronisé", id);
-
+        log.info("Compte #{} refusé", id);
         return toResponse(user);
     }
 
-    /**
-     * Updates or creates a Membre based on User status
-     * @param user The user to sync
-     * @param statutMembre The StatutCompte to apply to the member
-     */
-    private void updateOrCreateMembre(User user, StatutCompte statutMembre) {
-        Optional<Membre> existingMembre = membreRepository.findByEmail(user.getEmail());
-
-        if (existingMembre.isPresent()) {
-            Membre membre = existingMembre.get();
-            membre.setStatut(statutMembre);
-            membre.setNom(user.getNom());
-            membre.setPrenom(user.getPrenom());
-            if (user.getRole() != null) {
-                membre.setRole(user.getRole().name());
-            }
-            if (user.getEquipe() != null) {
-                membre.setEquipe(user.getEquipe());
-            }
-            membreRepository.save(membre);
-
-            log.info("🔄 Membre mis à jour: {} {} - Statut: {}",
-                    membre.getPrenom(), membre.getNom(), statutMembre);
-        } else if (statutMembre == StatutCompte.ACCEPTE) {
-            // Create new membre only if account is accepted
-            Membre newMembre = Membre.builder()
-                    .nom(user.getNom())
-                    .prenom(user.getPrenom())
-                    .email(user.getEmail())
-                    .role(user.getRole() != null ? user.getRole().name() : "UTILISATEUR")
-                    .statut(statutMembre)
-                    .equipe(user.getEquipe())
-                    .build();
-            membreRepository.save(newMembre);
-            log.info("✅ Nouveau membre créé: {} {}", newMembre.getPrenom(), newMembre.getNom());
-        }
-    }
-
-    /**
-     * Get all pending account requests
-     */
+    // ── Demandes en attente ───────────────────────────────────────
     public List<UserResponse> getDemandesEnAttente() {
         return userRepository.findByStatut(StatutCompte.EN_ATTENTE)
                 .stream().map(this::toResponse).collect(Collectors.toList());
     }
 
-    /**
-     * Get user by ID
-     */
-    public UserResponse getUserById(Long id) {
-        return toResponse(userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé.")));
-    }
-
-    /**
-     * Get all users
-     */
+    // ── Tous les utilisateurs ─────────────────────────────────────
     public List<UserResponse> getAllUsers() {
         return userRepository.findAll()
                 .stream().map(this::toResponse).collect(Collectors.toList());
     }
 
-    /**
-     * Get users by role
-     */
+    // ── Par ID ────────────────────────────────────────────────────
+    public UserResponse getUserById(Long id) {
+        return toResponse(userRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé.")));
+    }
+
+    // ── Par rôle ──────────────────────────────────────────────────
     public List<UserResponse> getByRole(Role role) {
         return userRepository.findByRole(role)
                 .stream().map(this::toResponse).collect(Collectors.toList());
     }
 
-    /**
-     * Update user information
-     */
+    // ── Modifier utilisateur ──────────────────────────────────────
     @Transactional
     public UserResponse updateUser(Long id, UserRequest request) {
-        log.info("✏️ Mise à jour utilisateur ID: {}", id);
+        log.info("Mise à jour utilisateur ID: {}", id);
 
         User user = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé."));
@@ -303,12 +194,11 @@ public class UserService {
         user.setNom(request.getNom());
         user.setPrenom(request.getPrenom());
         user.setEmail(request.getEmail());
+        user.setRole(request.getRole());
 
         if (request.getPassword() != null && !request.getPassword().isEmpty()) {
             user.setPassword(passwordEncoder.encode(request.getPassword()));
         }
-
-        user.setRole(request.getRole());
 
         if (request.getEquipeId() != null) {
             Equipe equipe = equipeRepository.findById(request.getEquipeId())
@@ -316,38 +206,22 @@ public class UserService {
             user.setEquipe(equipe);
         }
 
-        User saved = userRepository.save(user);
-
-        // Sync membre with the user's new status
-        updateOrCreateMembre(saved, saved.getStatut());
-
-        log.info("✅ Utilisateur #{} mis à jour", id);
-
-        return toResponse(saved);
+        return toResponse(userRepository.save(user));
     }
 
-    /**
-     * Delete user
-     */
+    // ── Supprimer utilisateur ─────────────────────────────────────
     @Transactional
     public void deleteUser(Long id) {
-        log.info("🗑️ Suppression utilisateur ID: {}", id);
-
-        User user = userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé."));
-
-        // Delete associated membre
-        membreRepository.findByEmail(user.getEmail()).ifPresent(membreRepository::delete);
-
+        if (!userRepository.existsById(id)) {
+            throw new RuntimeException("Utilisateur non trouvé.");
+        }
         userRepository.deleteById(id);
-        log.info("✅ Utilisateur #{} supprimé", id);
+        log.info("Utilisateur #{} supprimé", id);
     }
 
-    /**
-     * Login user
-     */
+    // ── Login ─────────────────────────────────────────────────────
     public User login(String email, String password) {
-        log.info("🔐 Tentative de connexion: {}", email);
+        log.info("Tentative de connexion: {}", email);
 
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("Email introuvable."));
@@ -360,26 +234,23 @@ public class UserService {
             throw new RuntimeException("Mot de passe incorrect.");
         }
 
-        log.info("✅ Connexion réussie pour: {}", email);
-
+        log.info("Connexion réussie pour: {}", email);
         return user;
     }
 
-    /**
-     * Synchronize all existing users with membre table (for migration)
-     */
-    @Transactional
-    public void synchroniserTousLesUtilisateurs() {
-        log.info("🔄 Synchronisation de tous les utilisateurs avec la table membre");
+    // ── Techniciens ───────────────────────────────────────────────
+    public List<UserResponse> getTechniciens() {
+        return userRepository.findTechniciens(
+                List.of(Role.TECHNIQUE, Role.TECHNICIEN),
+                StatutCompte.ACCEPTE
+        ).stream().map(this::toResponse).collect(Collectors.toList());
+    }
 
-        List<User> allUsers = userRepository.findAll();
-        int compteur = 0;
-
-        for (User user : allUsers) {
-            updateOrCreateMembre(user, user.getStatut());
-            compteur++;
-        }
-
-        log.info("✅ Synchronisation terminée: {} utilisateurs traités", compteur);
+    public List<UserResponse> getTechniciensByEquipe(String nomEquipe) {
+        return userRepository.findTechniciensByEquipe(
+                List.of(Role.TECHNIQUE, Role.TECHNICIEN),
+                StatutCompte.ACCEPTE,
+                nomEquipe
+        ).stream().map(this::toResponse).collect(Collectors.toList());
     }
 }

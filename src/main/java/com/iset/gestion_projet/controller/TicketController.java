@@ -133,4 +133,10 @@ public class TicketController {
                     .body(Map.of("message", e.getMessage()));
         }
     }
+
+    // Dans TicketController.java
+    @GetMapping("/{id}/progression")
+    public ResponseEntity<Map<String, Object>> getTicketProgression(@PathVariable Long id) {
+        return ResponseEntity.ok(ticketService.getTicketProgression(id));
+    }
 }

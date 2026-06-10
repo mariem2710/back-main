@@ -1,12 +1,14 @@
 package com.iset.gestion_projet.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
 import java.util.List;
 
 @Entity
 @Table(name = "equipe")
-@Data @Builder
+@Data
+@Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class Equipe {
@@ -16,12 +18,14 @@ public class Equipe {
     private Long id;
 
     @Column(unique = true, nullable = false)
-    private String nom; // ex: "SAP", "CRM", "Billing"
+    private String nom;
 
     private String description;
 
-    private String systemeAssocie; // ex: "SAP", "CRM" — pour matching IA
+    private String systemeAssocie;
 
-    @OneToMany(mappedBy = "equipe", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private List<Membre> membres;
+    // ✅ Remplacé List<Membre> par List<User>
+    @JsonIgnore
+    @OneToMany(mappedBy = "equipe", fetch = FetchType.LAZY)
+    private List<User> membres;
 }

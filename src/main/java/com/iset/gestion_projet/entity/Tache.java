@@ -3,13 +3,14 @@ package com.iset.gestion_projet.entity;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "tache")
-@Getter @Setter
-@NoArgsConstructor @AllArgsConstructor
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
 @Builder
 public class Tache {
 
@@ -34,19 +35,14 @@ public class Tache {
     private LocalDateTime dateCreation;
 
     @Column(name = "date_limite")
-    private LocalDate dateLimite;
+    private LocalDateTime dateLimite;
 
-    // ── Affectation manuelle (User) ───────────────────
+    // ✅ UN SEUL champ assignation — User filtré TECHNIQUE/TECHNICIEN
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "assignee_id")
     private User assignee;
 
-    // ── Affectation IA (Membre) ───────────────────────
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "assigne_a_id")
-    private Membre assigneA;
-
-    // ── Sous-ticket parent ────────────────────────────
+    // ✅ Sous-ticket parent
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "sous_ticket_id")
     @JsonIgnore

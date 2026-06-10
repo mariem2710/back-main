@@ -2,33 +2,30 @@ package com.iset.gestion_projet.DTOS;
 
 import com.iset.gestion_projet.entity.Priorite;
 import com.iset.gestion_projet.entity.Statut;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import lombok.AllArgsConstructor;
+import lombok.*;
 
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 
-@Data
-@Builder
+@Getter
+@Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@Builder
 public class TacheResponse {
-    private Long id;
-    private String titre;
-    private String description;
-    private Statut statut;
-    private Priorite priorite;
-    private LocalDateTime dateCreation;
-    private LocalDateTime dateLimite;
 
-    // Assignation
-    private Long assigneeId;
-    private String assigneeNom;
-    private String assigneePrenom;
+    private Long       id;
+    private String     titre;
+    private String     description;
+    private Statut     statut;
+    private Priorite   priorite;
+    private LocalDate  dateCreation;
+    private LocalDate  dateLimite;
+    private Long       sousTicketId;
+    private String     sousTicketTitre;
+    private Long       ticketId;
 
-    // Relations
-    private Long sousTicketId;
-    private String sousTicketTitre;
-    private Long ticketId;
+    // ✅ Champs assignee — viennent de Membre (assigneA) ou User (assignee)
+    private Long       assigneeId;
+    private String     assigneeNom;     // ← doit être non null pour affichage
+    private String     assigneePrenom;  // ← doit être non null pour affichage
 }

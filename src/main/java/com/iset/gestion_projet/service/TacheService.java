@@ -8,80 +8,69 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
-@Slf4j
 public class TacheService {
 
-    private final TacheRepository tacheRepository;
+    private final TacheRepository      tacheRepository;
     private final SousTicketRepository sousTicketRepository;
-    private final UserRepository userRepository;
-    private final TicketRepository ticketRepository;
-    private final AIService aiService;
+    private final UserRepository       userRepository;
+    private final TicketRepository     ticketRepository;
+    private final AIService            aiService;
+
+    // ══════════════════════════════════════════════════════════════
+    //  GÉNÉRATION
+    // ══════════════════════════════════════════════════════════════
 
     @Transactional
     public List<TacheResponse> genererTachesIA(Long sousTicketId) {
-        SousTicket sousTicket = sousTicketRepository
-                .findById(sousTicketId)
-                .orElseThrow(() -> new RuntimeException("SousTicket introuvable : " + sousTicketId));
+        log.info("🎯 Génération tâches IA — sous-ticket #{}", sousTicketId);
+
+        SousTicket sousTicket = sousTicketRepository.findById(sousTicketId)
+                .orElseThrow(() -> new RuntimeException("SousTicket introuvable: " + sousTicketId));
+
+        List<Tache> existantes = tacheRepository.findBySousTicketId(sousTicketId);
+        if (!existantes.isEmpty()) {
+            tacheRepository.deleteAll(existantes);
+            tacheRepository.flush();
+        }
 
         List<Tache> taches = aiService.genererTachesPourSousTicket(sousTicket);
-
-        // Définir les valeurs par défaut
-        taches.forEach(tache -> {
-            if (tache.getDateCreation() == null) {
-                tache.setDateCreation(LocalDateTime.now());
-            }
-            if (tache.getStatut() == null) {
-                tache.setStatut(Statut.A_faire);
-            }
-            if (tache.getPriorite() == null) {
-                tache.setPriorite(Priorite.MOYENNE);
-            }
-            tache.setSousTicket(sousTicket);
-        });
-
-        List<Tache> saved = tacheRepository.saveAll(taches);
-        log.info("✅ {} tâches créées pour SousTicket #{}", saved.size(), sousTicketId);
-
-        return saved.stream()
-                .map(this::toResponse)
-                .collect(Collectors.toList());
+        return taches.stream().map(this::toResponse).collect(Collectors.toList());
     }
+
+    // ══════════════════════════════════════════════════════════════
+    //  GESTION
+    // ══════════════════════════════════════════════════════════════
 
     @Transactional
     public TacheResponse prendreEnCharge(Long tacheId, Long employeId) {
         Tache tache = findTache(tacheId);
-        User user = findUser(employeId);
+        User  user  = findUser(employeId);
 
         tache.setAssignee(user);
         tache.setStatut(Statut.En_cours);
-        tache = tacheRepository.save(tache);
-
-        log.info("👤 Tâche #{} prise en charge par {}", tacheId, user.getEmail());
-        return toResponse(tache);
+        return toResponse(tacheRepository.save(tache));
     }
 
     @Transactional
     public TacheResponse terminerTache(Long tacheId, Long employeId) {
+        log.info("🔧 Terminaison tâche #{} par employé #{}", tacheId, employeId);
+
         Tache tache = findTache(tacheId);
-        User user = findUser(employeId);
+        User  user  = findUser(employeId);
 
-        // Vérifier l'assignation
-        boolean isAssigned = false;
-        if (tache.getAssigneA() != null && tache.getAssigneA().getEmail() != null) {
-            isAssigned = tache.getAssigneA().getEmail().equals(user.getEmail());
-        }
-        if (!isAssigned && tache.getAssignee() != null) {
-            isAssigned = tache.getAssignee().getId().equals(employeId);
-        }
-
-        if (!isAssigned) {
-            throw new RuntimeException("Cette tâche n'est pas assignée à l'employé #" + employeId);
+        // ✅ Vérification assignation — un seul champ assignee
+        if (tache.getAssignee() == null ||
+                !tache.getAssignee().getId().equals(employeId)) {
+            throw new RuntimeException(
+                    "Cette tâche n'est pas assignée à l'employé #" + employeId);
         }
 
         if (tache.getStatut() == Statut.Fait) {
@@ -90,17 +79,102 @@ public class TacheService {
 
         tache.setStatut(Statut.Fait);
         tache = tacheRepository.save(tache);
-
         log.info("✅ Tâche #{} terminée", tacheId);
+
+        // Vérifier fermeture automatique du ticket
+        if (tache.getSousTicket() != null && tache.getSousTicket().getTicket() != null) {
+            verifierEtFermerTicket(tache.getSousTicket().getTicket());
+        }
+
         return toResponse(tache);
     }
 
+    private void verifierEtFermerTicket(Ticket ticket) {
+        List<SousTicket> sousTickets = sousTicketRepository.findByTicketId(ticket.getId());
+        long total     = 0;
+        long terminees = 0;
+
+        for (SousTicket st : sousTickets) {
+            List<Tache> taches = tacheRepository.findBySousTicketId(st.getId());
+            total     += taches.size();
+            terminees += taches.stream().filter(t -> t.getStatut() == Statut.Fait).count();
+        }
+
+        double progression = total == 0 ? 0 : (terminees * 100.0 / total);
+
+        if (progression >= 100.0 && ticket.getStatut() != Statut.TERMINE) {
+            log.info("🎉 Ticket #{} → 100% — Fermeture automatique", ticket.getId());
+            ticket.setStatut(Statut.TERMINE);
+            ticket.setDateMiseAJour(LocalDate.now());
+            ticketRepository.save(ticket);
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  PROGRESSION
+    // ══════════════════════════════════════════════════════════════
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> calculerProgressionTicket(Long ticketId) {
+        Ticket ticket = ticketRepository.findById(ticketId)
+                .orElseThrow(() -> new RuntimeException("Ticket introuvable: " + ticketId));
+
+        List<SousTicket> sousTickets = sousTicketRepository.findByTicketId(ticketId);
+        long total     = 0;
+        long terminees = 0;
+
+        for (SousTicket st : sousTickets) {
+            List<Tache> taches = tacheRepository.findBySousTicketId(st.getId());
+            total     += taches.size();
+            terminees += taches.stream().filter(t -> t.getStatut() == Statut.Fait).count();
+        }
+
+        double progression    = total == 0 ? 0 : (terminees * 100.0 / total);
+        double progArrondie   = Math.round(progression * 10.0) / 10.0;
+        boolean estFerme      = progArrondie >= 100.0;
+
+        if (estFerme && ticket.getStatut() != Statut.TERMINE) {
+            ticket.setStatut(Statut.TERMINE);
+            ticket.setDateMiseAJour(LocalDate.now());
+            ticketRepository.save(ticket);
+        }
+
+        return Map.of(
+                "ticketId",       ticketId,
+                "titre",          ticket.getTitre(),
+                "statut",         ticket.getStatut().name(),
+                "totalTaches",    total,
+                "tachesFaites",   terminees,
+                "progression",    progArrondie,
+                "progressionPct", String.format("%.1f%%", progArrondie),
+                "ferme",          estFerme
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  AIDE IA
+    // ══════════════════════════════════════════════════════════════
+
+    @Transactional
+    public String envoyerProblemeIA(Long tacheId, String probleme) {
+        Tache tache = findTache(tacheId);
+        String prompt = String.format(
+                "Un technicien est bloqué sur une tâche. " +
+                        "Propose une solution concrète et technique en français.\n\n" +
+                        "Tâche : %s\nDescription : %s\nProblème : %s\n\nSolution :",
+                tache.getTitre(), tache.getDescription(), probleme
+        );
+        return aiService.analyze(prompt);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  REQUÊTES
+    // ══════════════════════════════════════════════════════════════
+
     @Transactional(readOnly = true)
     public List<TacheResponse> getMesTaches(Long employeId) {
-        User user = findUser(employeId);
-
-        return tacheRepository
-                .findAllTachesForUser(employeId)
+        findUser(employeId); // Vérifier existence
+        return tacheRepository.findAllTachesForUser(employeId)
                 .stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
@@ -108,8 +182,7 @@ public class TacheService {
 
     @Transactional(readOnly = true)
     public List<TacheResponse> getBySousTicket(Long sousTicketId) {
-        return tacheRepository
-                .findBySousTicketId(sousTicketId)
+        return tacheRepository.findBySousTicketId(sousTicketId)
                 .stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
@@ -118,126 +191,62 @@ public class TacheService {
     @Transactional(readOnly = true)
     public List<TacheResponse> getByTicket(Long ticketId) {
         ticketRepository.findById(ticketId)
-                .orElseThrow(() -> new RuntimeException("Ticket introuvable : " + ticketId));
-
-        List<SousTicket> sousTickets = sousTicketRepository.findByTicketId(ticketId);
-
-        return sousTickets.stream()
+                .orElseThrow(() -> new RuntimeException("Ticket introuvable: " + ticketId));
+        return sousTicketRepository.findByTicketId(ticketId)
+                .stream()
                 .flatMap(st -> tacheRepository.findBySousTicketId(st.getId()).stream())
                 .map(this::toResponse)
                 .collect(Collectors.toList());
     }
 
-    @Transactional
-    public String envoyerProblemeIA(Long tacheId, String probleme) {
-        Tache tache = findTache(tacheId);
+    // ══════════════════════════════════════════════════════════════
+    //  MAPPING
+    // ══════════════════════════════════════════════════════════════
 
-        String prompt = String.format(
-                "Un employé est bloqué sur une tâche. Propose une solution concrète en français.\n\n" +
-                        "Tâche : %s\nDescription : %s\nProblème signalé : %s\n\nSolution :",
-                tache.getTitre(),
-                tache.getDescription(),
-                probleme
-        );
+    private TacheResponse toResponse(Tache tache) {
+        if (tache == null) return null;
 
-        String solution = aiService.analyze(prompt);
-        log.info("🤖 Solution IA pour tâche #{}: {}", tacheId, solution);
-        return solution;
-    }
+        TacheResponse response = TacheResponse.builder()
+                .id(tache.getId())
+                .titre(tache.getTitre())
+                .description(tache.getDescription())
+                .statut(tache.getStatut())
+                .priorite(tache.getPriorite())
+                .dateCreation(tache.getDateCreation() != null
+                        ? tache.getDateCreation().toLocalDate() : null)
+                .dateLimite(tache.getDateLimite() != null
+                        ? tache.getDateLimite().toLocalDate() : null)
+                .build();
 
-    @Transactional(readOnly = true)
-    public Map<String, Object> calculerProgressionTicket(Long ticketId) {
-        ticketRepository.findById(ticketId)
-                .orElseThrow(() -> new RuntimeException("Ticket introuvable : " + ticketId));
-
-        List<SousTicket> sousTickets = sousTicketRepository.findByTicketId(ticketId);
-
-        long totalTaches = 0;
-        long tachesFaites = 0;
-
-        for (SousTicket st : sousTickets) {
-            List<Tache> taches = tacheRepository.findBySousTicketId(st.getId());
-            totalTaches += taches.size();
-            tachesFaites += taches.stream()
-                    .filter(t -> t.getStatut() == Statut.Fait)
-                    .count();
+        if (tache.getSousTicket() != null) {
+            response.setSousTicketId(tache.getSousTicket().getId());
+            response.setSousTicketTitre(tache.getSousTicket().getTitre());
+            if (tache.getSousTicket().getTicket() != null) {
+                response.setTicketId(tache.getSousTicket().getTicket().getId());
+            }
         }
 
-        double progression = totalTaches == 0 ? 0.0 : Math.round((tachesFaites * 100.0 / totalTaches) * 10.0) / 10.0;
-        boolean ferme = progression >= 100.0;
-
-        // Fermer le ticket automatiquement si 100%
-        if (ferme) {
-            ticketRepository.findById(ticketId).ifPresent(t -> {
-                if (t.getStatut() != Statut.TERMINE) {
-                    t.setStatut(Statut.TERMINE);
-                    ticketRepository.save(t);
-                    log.info("🎉 Ticket #{} fermé automatiquement", ticketId);
-                }
-            });
+        // ✅ Un seul champ assignee
+        if (tache.getAssignee() != null) {
+            response.setAssigneeId(tache.getAssignee().getId());
+            response.setAssigneeNom(tache.getAssignee().getNom());
+            response.setAssigneePrenom(tache.getAssignee().getPrenom());
         }
 
-        return Map.of(
-                "ticketId", ticketId,
-                "totalTaches", totalTaches,
-                "tachesFaites", tachesFaites,
-                "progression", progression,
-                "progressionPct", progression + "%",
-                "ferme", ferme
-        );
+        return response;
     }
 
-    // ──────────────── PRIVATE HELPERS ────────────────
+    // ══════════════════════════════════════════════════════════════
+    //  HELPERS
+    // ══════════════════════════════════════════════════════════════
+
     private Tache findTache(Long id) {
         return tacheRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Tâche introuvable : " + id));
+                .orElseThrow(() -> new RuntimeException("Tâche introuvable: " + id));
     }
 
     private User findUser(Long id) {
         return userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Employé introuvable : " + id));
-    }
-
-    private TacheResponse toResponse(Tache t) {
-        if (t == null) return null;
-
-        // Gestion sécurisée des dates
-        LocalDateTime dateLimite = null;
-        if (t.getDateLimite() != null) {
-            dateLimite = t.getDateLimite().atStartOfDay();
-        }
-
-        TacheResponse response = TacheResponse.builder()
-                .id(t.getId())
-                .titre(t.getTitre())
-                .description(t.getDescription())
-                .statut(t.getStatut())
-                .priorite(t.getPriorite())
-                .dateCreation(t.getDateCreation())
-                .dateLimite(dateLimite)
-                .build();
-
-        // Sous-ticket
-        if (t.getSousTicket() != null) {
-            response.setSousTicketId(t.getSousTicket().getId());
-            response.setSousTicketTitre(t.getSousTicket().getTitre());
-
-            if (t.getSousTicket().getTicket() != null) {
-                response.setTicketId(t.getSousTicket().getTicket().getId());
-            }
-        }
-
-        // Assignation (priorité au Membre IA, puis User)
-        if (t.getAssigneA() != null) {
-            response.setAssigneeId(t.getAssigneA().getId());
-            response.setAssigneeNom(t.getAssigneA().getNom());
-            response.setAssigneePrenom(t.getAssigneA().getPrenom());
-        } else if (t.getAssignee() != null) {
-            response.setAssigneeId(t.getAssignee().getId());
-            response.setAssigneeNom(t.getAssignee().getNom());
-            response.setAssigneePrenom(t.getAssignee().getPrenom());
-        }
-
-        return response;
+                .orElseThrow(() -> new RuntimeException("Utilisateur introuvable: " + id));
     }
 }

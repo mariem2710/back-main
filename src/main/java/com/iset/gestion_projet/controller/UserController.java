@@ -19,7 +19,7 @@ import java.util.Map;
 public class UserController {
 
     private final UserService userService;
-    private final JwtService jwtService;
+    private final JwtService  jwtService;
 
     // ─────────────────────────────────────────────
     // AUTH
@@ -28,7 +28,7 @@ public class UserController {
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody UserRequest request) {
         try {
-            var user = userService.login(request.getEmail(), request.getPassword());
+            var user  = userService.login(request.getEmail(), request.getPassword());
             String token = jwtService.generateToken(user.getEmail());
             return ResponseEntity.ok(new LoginResponse(
                     token,
@@ -67,7 +67,8 @@ public class UserController {
             @RequestBody Map<String, String> body) {
         String password = body.get("password");
         if (password == null || password.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("message", "Le mot de passe est obligatoire."));
+            return ResponseEntity.badRequest()
+                    .body(Map.of("message", "Le mot de passe est obligatoire."));
         }
         try {
             return ResponseEntity.ok(userService.accepterCompte(id, password));
@@ -86,10 +87,9 @@ public class UserController {
     }
 
     // ─────────────────────────────────────────────
-    // ADMIN: CREATE ACCOUNT DIRECTLY
+    // ADMIN : CREATE / ASSIGN
     // ─────────────────────────────────────────────
 
-    // POST /api/users/creer  — admin creates account with password + equipe
     @PostMapping("/creer")
     public ResponseEntity<?> creerCompte(@RequestBody UserRequest request) {
         try {
@@ -99,7 +99,6 @@ public class UserController {
         }
     }
 
-    // PUT /api/users/{userId}/equipe/{equipeId} — admin assigns user to equipe
     @PutMapping("/{userId}/equipe/{equipeId}")
     public ResponseEntity<?> assignerEquipe(
             @PathVariable Long userId,
@@ -156,11 +155,30 @@ public class UserController {
     }
 
     // ─────────────────────────────────────────────
-    // DEV UTILITY (remove before production)
+    // ✅ TECHNICIENS — Pour le microservice IA
+    // Filtre : Role IN (TECHNIQUE, TECHNICIEN)
+    //        + Statut = ACCEPTE
+    //        + Equipe != null
+    // ─────────────────────────────────────────────
+
+    @GetMapping("/techniciens")
+    public ResponseEntity<List<UserResponse>> getTechniciens() {
+        return ResponseEntity.ok(userService.getTechniciens());
+    }
+
+    @GetMapping("/techniciens/equipe/{nomEquipe}")
+    public ResponseEntity<List<UserResponse>> getTechniciensByEquipe(
+            @PathVariable String nomEquipe) {
+        return ResponseEntity.ok(userService.getTechniciensByEquipe(nomEquipe));
+    }
+
+    // ─────────────────────────────────────────────
+    // DEV UTILITY
     // ─────────────────────────────────────────────
 
     @GetMapping("/hash")
     public String hash(@RequestParam String p) {
-        return new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(p);
+        return new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder()
+                .encode(p);
     }
 }

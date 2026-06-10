@@ -19,91 +19,77 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AIService {
 
-    private final EquipeRepository equipeRepository;
-    private final MembreRepository membreRepository;
+    private final EquipeRepository    equipeRepository;
+    private final UserRepository      userRepository;      // ✅ Plus de MembreRepository
     private final SousTicketRepository sousTicketRepository;
-    private final TacheRepository tacheRepository;
-    private final TicketRepository ticketRepository;
-    private final RestTemplate restTemplate;
+    private final TacheRepository     tacheRepository;
+    private final TicketRepository    ticketRepository;
+    private final RestTemplate        restTemplate;
 
-    /**
-     * Analyse un ticket et crée des sous-tickets avec leurs tâches
-     * C'est la méthode principale appelée par TicketService.analyserTicket()
-     */
+    // ✅ Rôles techniques autorisés pour l'assignation
+    private static final List<Role> ROLES_TECHNIQUES =
+            List.of(Role.TECHNIQUE, Role.TECHNICIEN);
+
+    // ══════════════════════════════════════════════════════════════
+    //  ANALYSE PRINCIPALE
+    // ══════════════════════════════════════════════════════════════
+
     @Transactional
     public AIAnalyzeResponse analyserEtCreerSousTickets(Ticket ticket) {
-        log.info("========================================");
-        log.info("🤖 Début de l'analyse IA pour le ticket #{}: {}", ticket.getId(), ticket.getTitre());
+        log.info("🤖 Début analyse IA — ticket #{}: {}", ticket.getId(), ticket.getTitre());
 
         try {
-            // 1. Appeler l'API Python pour analyser le ticket
+            // 1. Appeler l'API Python
             Map<String, Object> aiResponse = callAnalyzeAPI(ticket);
 
             if (aiResponse == null) {
-                log.error("❌ La réponse de l'API IA est null");
-                return AIAnalyzeResponse.builder()
-                        .success(false)
-                        .error("L'API IA a retourné une réponse null")
-                        .build();
+                return buildError("L'API IA a retourné une réponse null");
             }
 
-            // Vérifier le champ success
-            boolean isSuccess = Boolean.TRUE.equals(aiResponse.get("success"));
-
-            if (!isSuccess) {
-                String errorMsg = (String) aiResponse.getOrDefault("error", "Erreur inconnue");
-                log.error("❌ L'API IA a indiqué une erreur: {}", errorMsg);
-                return AIAnalyzeResponse.builder()
-                        .success(false)
-                        .error("Erreur API IA: " + errorMsg)
-                        .build();
+            if (!Boolean.TRUE.equals(aiResponse.get("success"))) {
+                return buildError("Erreur API IA: " +
+                        aiResponse.getOrDefault("error", "Erreur inconnue"));
             }
 
-            // 2. Extraire les données de la réponse
-            String summary = (String) aiResponse.getOrDefault("summary", "");
-            String rootCause = (String) aiResponse.getOrDefault("root_cause", "");
-            List<String> systemsDetected = (List<String>) aiResponse.getOrDefault("systems_detected", new ArrayList<>());
-            List<Map<String, Object>> technicalTickets = (List<Map<String, Object>>) aiResponse.getOrDefault("technical_tickets", new ArrayList<>());
+            // 2. Extraire les données
+            String       summary          = (String) aiResponse.getOrDefault("summary", "");
+            String       rootCause        = (String) aiResponse.getOrDefault("root_cause", "");
+            List<String> systemsDetected  = castList(aiResponse.get("systems_detected"));
+            List<Map<String, Object>> sousTicketsIA =
+                    castListOfMaps(aiResponse.get("sous_tickets"));
 
-            // Vérifier si les données sont valides
-            if (technicalTickets.isEmpty()) {
-                if (!systemsDetected.isEmpty()) {
-                    log.info("📝 Création de tickets par défaut pour les systèmes: {}", systemsDetected);
-                    for (String systeme : systemsDetected) {
-                        Map<String, Object> defaultTicket = new HashMap<>();
-                        defaultTicket.put("system", systeme);
-                        defaultTicket.put("title", "[" + systeme + "] " + ticket.getTitre());
-                        defaultTicket.put("description", "À traiter par l'équipe " + systeme + ". " + summary);
-                        defaultTicket.put("priority", "MOYENNE");
-                        technicalTickets.add(defaultTicket);
-                    }
-                } else {
-                    log.error("❌ Aucun système détecté et aucun ticket technique");
-                    return AIAnalyzeResponse.builder()
-                            .success(false)
-                            .error("Aucun système détecté ni ticket technique dans la réponse")
-                            .build();
-                }
-            }
+            log.info("📊 Systèmes détectés: {} | Sous-tickets IA: {}",
+                    systemsDetected, sousTicketsIA.size());
 
-            log.info("🏗️ CRÉATION DES SOUS-TICKETS");
-
-            // 3. Créer les sous-tickets pour chaque système détecté
+            // 3. Créer les sous-tickets depuis la réponse IA
             List<SousTicket> createdSousTickets = new ArrayList<>();
 
-            for (Map<String, Object> techTicket : technicalTickets) {
-                String systeme = (String) techTicket.get("system");
-                String titre = (String) techTicket.get("title");
-                String description = (String) techTicket.get("description");
-                String priority = (String) techTicket.get("priority");
+            if (!sousTicketsIA.isEmpty()) {
+                // ✅ Utiliser les sous-tickets générés par l'IA (avec tâches incluses)
+                for (Map<String, Object> stData : sousTicketsIA) {
+                    SousTicket st = createSousTicketFromIA(ticket, stData);
+                    if (st != null) {
+                        createdSousTickets.add(st);
+                    }
+                }
+            } else {
+                // Fallback : créer un sous-ticket par système détecté
+                List<Map<String, Object>> technicalTickets =
+                        castListOfMaps(aiResponse.get("technical_tickets"));
 
-                // Créer le sous-ticket
-                SousTicket sousTicket = createSousTicketForSystem(ticket, systeme, titre, description, priority);
-                createdSousTickets.add(sousTicket);
+                for (Map<String, Object> tt : technicalTickets) {
+                    String systeme     = (String) tt.get("system");
+                    String titre       = (String) tt.get("title");
+                    String description = (String) tt.get("description");
+                    String priority    = (String) tt.get("priority");
 
-                // Générer les tâches pour ce sous-ticket
-                List<Tache> taches = genererTachesPourSousTicket(sousTicket);
-                log.info("✅ {} tâches générées pour le sous-ticket #{}", taches.size(), sousTicket.getId());
+                    SousTicket st = createSousTicketForSystem(
+                            ticket, systeme, titre, description, priority);
+                    if (st != null) {
+                        createdSousTickets.add(st);
+                        genererTachesPourSousTicket(st);
+                    }
+                }
             }
 
             // 4. Mettre à jour le ticket
@@ -114,8 +100,8 @@ public class AIService {
             ticket.setDateMiseAJour(LocalDate.now());
             ticketRepository.save(ticket);
 
-            log.info("✅ Analyse terminée avec succès! {} sous-ticket(s) créé(s)", createdSousTickets.size());
-            log.info("========================================");
+            log.info("✅ Analyse terminée — {} sous-ticket(s) créé(s)",
+                    createdSousTickets.size());
 
             return AIAnalyzeResponse.builder()
                     .success(true)
@@ -126,68 +112,40 @@ public class AIService {
                     .build();
 
         } catch (Exception e) {
-            log.error("❌ Erreur lors de l'analyse IA: {}", e.getMessage(), e);
-            return AIAnalyzeResponse.builder()
-                    .success(false)
-                    .error("Erreur: " + e.getMessage())
-                    .build();
+            log.error("❌ Erreur analyse IA: {}", e.getMessage(), e);
+            return buildError("Erreur: " + e.getMessage());
         }
     }
 
-    /**
-     * Appelle l'API Python pour analyser le ticket
-     */
-    private Map<String, Object> callAnalyzeAPI(Ticket ticket) {
-        String aiServiceUrl = "http://localhost:8000/api/v1/analyze";
-
-        Map<String, Object> request = new HashMap<>();
-        request.put("title", ticket.getTitre());
-        request.put("description", ticket.getDescription());
-        request.put("ticket_id", String.valueOf(ticket.getId()));
-        request.put("priority", ticket.getPriorite() != null ? ticket.getPriorite().name() : "MEDIUM");
-
-        log.info("📡 Appel de l'API IA: {}", aiServiceUrl);
-
-        try {
-            long startTime = System.currentTimeMillis();
-            var response = restTemplate.postForEntity(aiServiceUrl, request, Map.class);
-            long endTime = System.currentTimeMillis();
-
-            log.info("⏱️ Temps de réponse: {} ms", (endTime - startTime));
-            log.info("📊 Status code: {}", response.getStatusCode());
-
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                log.info("✅ Réponse reçue de l'API IA");
-                return response.getBody();
-            } else {
-                log.error("❌ Erreur API IA: status {}", response.getStatusCode());
-                return null;
-            }
-        } catch (Exception e) {
-            log.error("❌ Exception lors de l'appel API IA: {}", e.getMessage());
-            return null;
-        }
-    }
+    // ══════════════════════════════════════════════════════════════
+    //  CRÉATION SOUS-TICKET DEPUIS LA RÉPONSE IA
+    // ══════════════════════════════════════════════════════════════
 
     /**
-     * Crée un sous-ticket pour un système spécifique
+     * Crée un sous-ticket à partir des données générées par l'IA Python.
+     * Les tâches sont déjà dans la réponse avec les techniciens assignés.
      */
-    private SousTicket createSousTicketForSystem(Ticket ticket, String systeme, String titre, String description, String priority) {
-        // Récupérer l'équipe associée au système
-        Equipe equipe = getEquipeFromDatabase(systeme);
-        if (equipe == null) {
-            log.warn("⚠️ Aucune équipe trouvée pour: {}, utilisation IT Support", systeme);
-            equipe = equipeRepository.findByNom("IT Support").orElse(null);
-        }
+    @Transactional
+    private SousTicket createSousTicketFromIA(
+            Ticket ticket,
+            Map<String, Object> stData) {
 
-        Priorite priorite = convertPriority(priority);
+        String equipeNom    = (String) stData.getOrDefault("equipe", "IT");
+        String titre        = (String) stData.getOrDefault("titre",  "Sous-ticket");
+        String description  = (String) stData.getOrDefault("description", "");
+        String prioriteStr  = (String) stData.getOrDefault("priorite", "MEDIUM");
+        List<Map<String, Object>> tachesData = castListOfMaps(stData.get("taches"));
 
+        // Récupérer l'équipe
+        Equipe equipe = getEquipeFromDatabase(equipeNom);
+
+        // Créer le sous-ticket
         SousTicket sousTicket = SousTicket.builder()
                 .ticket(ticket)
-                .titre(titre != null && !titre.isEmpty() ? titre : "[" + systeme + "] " + ticket.getTitre())
-                .description(description != null && !description.isEmpty() ? description : "À traiter par l'équipe " + systeme)
-                .systemeImpacte(systeme)
-                .priorite(priorite)
+                .titre(titre)
+                .description(description)
+                .systemeImpacte(equipeNom)
+                .priorite(convertPriority(prioriteStr))
                 .statut(Statut.A_FAIRE)
                 .generePar("IA - Mistral")
                 .dateCreation(LocalDate.now())
@@ -195,306 +153,318 @@ public class AIService {
                 .build();
 
         SousTicket saved = sousTicketRepository.save(sousTicket);
-        log.info("✅ Sous-ticket créé: ID={}, Titre={}", saved.getId(), saved.getTitre());
+        log.info("✅ Sous-ticket créé: #{} — {}", saved.getId(), saved.getTitre());
+
+        // Compteur de charge par technicien pour ce sous-ticket
+        Map<Long, Integer> chargeParTechnicien = new HashMap<>();
+
+        // Créer les tâches avec assignation équitable
+        List<Tache> taches = new ArrayList<>();
+        List<Long>  idsDejaAssignesDansCeSousTicket = new ArrayList<>();
+
+        for (Map<String, Object> tacheData : tachesData) {
+            String titreTache       = (String) tacheData.getOrDefault("titre", "");
+            String descTache        = (String) tacheData.getOrDefault("description", "");
+            String prioriteTache    = (String) tacheData.getOrDefault("priorite", "MEDIUM");
+            int    dureeHeures      = getInt(tacheData.get("duree_heures"), 4);
+
+            // ✅ Choisir le technicien avec rotation + charge équilibrée
+            User technicien = choisirTechnicienEquitable(
+                    equipe,
+                    chargeParTechnicien,
+                    idsDejaAssignesDansCeSousTicket
+            );
+
+            Tache tache = Tache.builder()
+                    .titre(titreTache)
+                    .description(descTache)
+                    .sousTicket(saved)
+                    .statut(Statut.A_faire)
+                    .priorite(convertPriority(prioriteTache))
+                    .dateCreation(LocalDateTime.now())
+                    .dateLimite(LocalDateTime.now().plusDays(dureeHeures / 8 + 1))
+                    .assignee(technicien)    // ✅ User directement
+                    .build();
+
+            taches.add(tache);
+
+            if (technicien != null) {
+                idsDejaAssignesDansCeSousTicket.add(technicien.getId());
+                chargeParTechnicien.merge(technicien.getId(), 1, Integer::sum);
+                log.info("👤 Tâche '{}' → {} {}",
+                        titreTache,
+                        technicien.getPrenom(),
+                        technicien.getNom());
+            }
+        }
+
+        tacheRepository.saveAll(taches);
+        log.info("✅ {} tâche(s) créée(s) pour '{}'", taches.size(), saved.getTitre());
 
         return saved;
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //  ASSIGNATION ÉQUITABLE DES TECHNICIENS
+    // ══════════════════════════════════════════════════════════════
+
     /**
-     * Convertit la priorité reçue de l'API en enum Priorite
+     * Choisit le technicien le moins chargé, avec rotation dans le sous-ticket.
+     * Filtre : Role IN (TECHNIQUE, TECHNICIEN) + Statut = ACCEPTE + Equipe assignée.
      */
-    private Priorite convertPriority(String priority) {
-        if (priority == null) return Priorite.MOYENNE;
-        switch (priority.toUpperCase()) {
-            case "BASSE": case "LOW": return Priorite.BASSE;
-            case "HAUTE": case "HIGH": return Priorite.HAUTE;
-            case "CRITIQUE": case "CRITICAL": return Priorite.CRITIQUE;
-            default: return Priorite.MOYENNE;
+    private User choisirTechnicienEquitable(
+            Equipe equipe,
+            Map<Long, Integer> chargeParTechnicien,
+            List<Long> idsDejaAssignesDansCeSousTicket) {
+
+        // Récupérer les techniciens filtrés de l'équipe
+        List<User> techniciens = getTechniciensEquipe(equipe);
+
+        if (techniciens.isEmpty()) {
+            log.warn("⚠️ Aucun technicien disponible pour l'équipe '{}'",
+                    equipe != null ? equipe.getNom() : "null");
+            return null;
         }
+
+        // Trier par charge globale croissante
+        List<User> tries = techniciens.stream()
+                .sorted(Comparator.comparingInt(
+                        t -> chargeParTechnicien.getOrDefault(t.getId(), 0)
+                ))
+                .collect(Collectors.toList());
+
+        // Préférer un technicien pas encore assigné dans CE sous-ticket
+        User choisi = tries.stream()
+                .filter(t -> !idsDejaAssignesDansCeSousTicket.contains(t.getId()))
+                .findFirst()
+                .orElse(tries.get(0)); // fallback : le moins chargé globalement
+
+        log.debug("👤 Technicien sélectionné: {} {} (charge: {})",
+                choisi.getPrenom(), choisi.getNom(),
+                chargeParTechnicien.getOrDefault(choisi.getId(), 0));
+
+        return choisi;
     }
 
     /**
-     * Génère des tâches pour un sous-ticket avec assignation uniquement aux membres ACCEPTE
+     * Récupère les techniciens d'une équipe :
+     * Role IN (TECHNIQUE, TECHNICIEN) + Statut = ACCEPTE + equipe non nulle.
      */
+    private List<User> getTechniciensEquipe(Equipe equipe) {
+        if (equipe != null) {
+            List<User> techniciens = userRepository.findTechniciensByEquipeObj(
+                    ROLES_TECHNIQUES, StatutCompte.ACCEPTE, equipe);
+            if (!techniciens.isEmpty()) {
+                return techniciens;
+            }
+        }
+        // Fallback : tous les techniciens actifs toutes équipes
+        return userRepository.findTechniciens(ROLES_TECHNIQUES, StatutCompte.ACCEPTE);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  CRÉATION SOUS-TICKET (fallback technique_tickets)
+    // ══════════════════════════════════════════════════════════════
+
+    private SousTicket createSousTicketForSystem(
+            Ticket ticket,
+            String systeme,
+            String titre,
+            String description,
+            String priority) {
+
+        Equipe equipe = getEquipeFromDatabase(systeme);
+
+        SousTicket sousTicket = SousTicket.builder()
+                .ticket(ticket)
+                .titre(titre != null ? titre : "[" + systeme + "] " + ticket.getTitre())
+                .description(description != null ? description : "À traiter: " + systeme)
+                .systemeImpacte(systeme)
+                .priorite(convertPriority(priority))
+                .statut(Statut.A_FAIRE)
+                .generePar("IA - Mistral")
+                .dateCreation(LocalDate.now())
+                .equipe(equipe)
+                .build();
+
+        SousTicket saved = sousTicketRepository.save(sousTicket);
+        log.info("✅ Sous-ticket fallback: #{} — {}", saved.getId(), saved.getTitre());
+        return saved;
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  GÉNÉRATION TÂCHES (appelée manuellement depuis TacheService)
+    // ══════════════════════════════════════════════════════════════
+
     @Transactional
     public List<Tache> genererTachesPourSousTicket(SousTicket sousTicket) {
-        log.info("========================================");
-        log.info("🎯 Génération de tâches pour le sous-ticket #{}: {}", sousTicket.getId(), sousTicket.getTitre());
-        log.info("📌 Système impacté: {}", sousTicket.getSystemeImpacte());
+        log.info("🎯 Génération tâches pour sous-ticket #{}: {}",
+                sousTicket.getId(), sousTicket.getTitre());
 
-        List<Tache> taches = new ArrayList<>();
-        String systeme = sousTicket.getSystemeImpacte();
-
-        // 1. Supprimer les anciennes tâches
-        List<Tache> existingTaches = tacheRepository.findBySousTicketId(sousTicket.getId());
-        if (!existingTaches.isEmpty()) {
-            log.info("🗑️ Suppression de {} anciennes tâches", existingTaches.size());
-            tacheRepository.deleteAll(existingTaches);
+        // Supprimer les anciennes tâches
+        List<Tache> existantes = tacheRepository.findBySousTicketId(sousTicket.getId());
+        if (!existantes.isEmpty()) {
+            tacheRepository.deleteAll(existantes);
             tacheRepository.flush();
         }
 
-        // 2. Récupérer l'équipe
         Equipe equipe = sousTicket.getEquipe();
         if (equipe == null) {
-            equipe = getEquipeFromDatabase(systeme);
+            equipe = getEquipeFromDatabase(sousTicket.getSystemeImpacte());
         }
 
-        if (equipe == null) {
-            log.warn("⚠️ Aucune équipe trouvée pour: {}, utilisation IT Support", systeme);
-            equipe = equipeRepository.findByNom("IT Support").orElse(null);
-        }
+        // Générer les descriptions
+        List<String> descriptions = getTachesDescriptions(
+                sousTicket.getSystemeImpacte(), sousTicket.getDescription());
 
-        // 3. Récupérer UNIQUEMENT les membres avec statut ACCEPTE
-        List<Membre> membresAcceptes = getMembresAcceptesFromDatabase(equipe);
+        Map<Long, Integer> chargeParTechnicien        = new HashMap<>();
+        List<Long>         idsAssignesDansCeSousTicket = new ArrayList<>();
+        List<Tache>        taches                      = new ArrayList<>();
 
-        log.info("🏢 Équipe: {}", equipe != null ? equipe.getNom() : "Aucune");
-        log.info("✅ Membres ACCEPTE trouvés: {}", membresAcceptes.size());
+        for (String desc : descriptions) {
+            User technicien = choisirTechnicienEquitable(
+                    equipe, chargeParTechnicien, idsAssignesDansCeSousTicket);
 
-        if (!membresAcceptes.isEmpty()) {
-            log.info("📋 Liste des membres validés:");
-            for (Membre membre : membresAcceptes) {
-                log.info("   - {} {} ({}) - Email: {} - Statut: {}",
-                        membre.getPrenom(), membre.getNom(), membre.getRole(),
-                        membre.getEmail(), membre.getStatut());
-            }
-        } else {
-            log.warn("⚠️ Aucun membre ACCEPTE trouvé!");
-        }
-
-        // 4. Générer les descriptions des tâches
-        List<String> descriptionsTaches = getTachesDescriptions(systeme, sousTicket.getDescription());
-        log.info("📝 {} tâches à générer", descriptionsTaches.size());
-
-        // 5. Créer et répartir les tâches
-        Map<Long, Integer> compteurTachesParMembre = new HashMap<>();
-
-        for (int i = 0; i < descriptionsTaches.size(); i++) {
-            Tache tache = new Tache();
-            String description = descriptionsTaches.get(i);
-
-            String titre = String.format("[%s] Tâche %d: %s",
-                    systeme != null ? systeme.toUpperCase() : "GENERAL",
-                    i + 1,
-                    description.length() > 80 ? description.substring(0, 77) + "..." : description
-            );
-            tache.setTitre(titre);
-            tache.setDescription(description);
-            tache.setSousTicket(sousTicket);
-            tache.setStatut(Statut.A_FAIRE);
-            tache.setPriorite(sousTicket.getPriorite());
-            tache.setDateCreation(LocalDateTime.now());
-
-            // Assigner uniquement à un membre ACCEPTE
-            if (!membresAcceptes.isEmpty()) {
-                Membre membreAssigne = assignerMembreRoundRobin(membresAcceptes, i);
-                tache.setAssigneA(membreAssigne);
-                compteurTachesParMembre.merge(membreAssigne.getId(), 1, Integer::sum);
-                log.debug("✅ Tâche assignée à {} {}", membreAssigne.getPrenom(), membreAssigne.getNom());
-            } else {
-                log.error("❌ Aucun membre ACCEPTE disponible!");
-                tache.setDescription(description + "\n\n⚠️ ATTENTION: Aucun membre validé disponible!");
-            }
+            Tache tache = Tache.builder()
+                    .titre(desc.length() > 80 ? desc.substring(0, 77) + "…" : desc)
+                    .description(desc)
+                    .sousTicket(sousTicket)
+                    .statut(Statut.A_faire)
+                    .priorite(sousTicket.getPriorite())
+                    .dateCreation(LocalDateTime.now())
+                    .assignee(technicien)
+                    .build();
 
             taches.add(tache);
-        }
 
-        // 6. Sauvegarder les tâches
-        List<Tache> savedTaches = tacheRepository.saveAll(taches);
-        log.info("✅ {} tâches générées", savedTaches.size());
-
-        // 7. Afficher le récapitulatif
-        log.info("📊 RÉPARTITION DES TÂCHES PAR MEMBRE:");
-        for (Map.Entry<Long, Integer> entry : compteurTachesParMembre.entrySet()) {
-            Membre membre = membresAcceptes.stream()
-                    .filter(m -> m.getId().equals(entry.getKey()))
-                    .findFirst().orElse(null);
-            if (membre != null) {
-                log.info("   👤 {} {}: {} tâche(s)", membre.getPrenom(), membre.getNom(), entry.getValue());
-            }
-        }
-        log.info("========================================");
-
-        return savedTaches;
-    }
-
-    /**
-     * Récupère uniquement les membres avec statut ACCEPTE
-     */
-    private List<Membre> getMembresAcceptesFromDatabase(Equipe equipe) {
-        List<Membre> membresAcceptes = new ArrayList<>();
-
-        if (equipe != null) {
-            // Utiliser la méthode avec StatutCompte.ACCEPTE
-            membresAcceptes = membreRepository.findByEquipeAndStatut(equipe, StatutCompte.ACCEPTE);
-            log.debug("Membres ACCEPTE dans '{}': {}", equipe.getNom(), membresAcceptes.size());
-        }
-
-        // Si aucun membre trouvé dans l'équipe, chercher tous les membres ACCEPTE
-        if (membresAcceptes.isEmpty()) {
-            membresAcceptes = membreRepository.findByStatut(StatutCompte.ACCEPTE);
-            log.debug("Total membres ACCEPTE dans la base: {}", membresAcceptes.size());
-        }
-
-        // Filtrer ceux avec email valide
-        membresAcceptes = membresAcceptes.stream()
-                .filter(m -> m.getEmail() != null && !m.getEmail().isEmpty())
-                .collect(Collectors.toList());
-
-        return membresAcceptes;
-    }
-
-    /**
-     * Récupère l'équipe depuis la base de données
-     */
-    private Equipe getEquipeFromDatabase(String systeme) {
-        if (systeme == null || systeme.trim().isEmpty()) {
-            return null;
-        }
-
-        // Recherche par systemeAssocie
-        List<Equipe> equipes = equipeRepository.findBySystemeAssocieIgnoreCase(systeme);
-        if (!equipes.isEmpty()) {
-            return equipes.get(0);
-        }
-
-        // Recherche par nom
-        equipes = equipeRepository.findByNomContainingIgnoreCase(systeme);
-        if (!equipes.isEmpty()) {
-            return equipes.get(0);
-        }
-
-        // Mapping
-        String teamName = mapSystemToTeamName(systeme);
-        if (teamName != null) {
-            Optional<Equipe> equipe = equipeRepository.findByNom(teamName);
-            if (equipe.isPresent()) {
-                return equipe.get();
+            if (technicien != null) {
+                idsAssignesDansCeSousTicket.add(technicien.getId());
+                chargeParTechnicien.merge(technicien.getId(), 1, Integer::sum);
             }
         }
 
-        return equipeRepository.findByNom("IT Support").orElse(null);
+        List<Tache> saved = tacheRepository.saveAll(taches);
+        log.info("✅ {} tâches générées", saved.size());
+        return saved;
     }
 
-    /**
-     * Mappe un système vers un nom d'équipe
-     */
-    private String mapSystemToTeamName(String systeme) {
-        Map<String, String> mapping = new HashMap<>();
-        mapping.put("CRM", "CRM Team");
-        mapping.put("SAP", "SAP Team");
-        mapping.put("Billing", "Billing Team");
-        mapping.put("Authentication", "Security Team");
-        mapping.put("Mobile App", "Mobile Team");
-        mapping.put("Mobile", "Mobile Team");
-        mapping.put("Website", "Web Team");
-        mapping.put("Web", "Web Team");
-        mapping.put("Reporting", "Data Team");
-        mapping.put("IT Support", "IT Support");
-        return mapping.get(systeme);
-    }
+    // ══════════════════════════════════════════════════════════════
+    //  HELPERS
+    // ══════════════════════════════════════════════════════════════
 
-    /**
-     * Assigne un membre en round-robin
-     */
-    private Membre assignerMembreRoundRobin(List<Membre> membres, int taskIndex) {
-        if (membres == null || membres.isEmpty()) {
-            return null;
-        }
-        int memberIndex = taskIndex % membres.size();
-        return membres.get(memberIndex);
-    }
+    private Map<String, Object> callAnalyzeAPI(Ticket ticket) {
+        String url = "http://localhost:8000/api/v1/analyze";
+        Map<String, Object> request = new HashMap<>();
+        request.put("title",       ticket.getTitre());
+        request.put("description", ticket.getDescription());
+        request.put("ticket_id",   String.valueOf(ticket.getId()));
+        request.put("priority",    ticket.getPriorite() != null
+                ? ticket.getPriorite().name() : "MEDIUM");
 
-    /**
-     * Génère les descriptions des tâches
-     */
-    private List<String> getTachesDescriptions(String systeme, String description) {
-        List<String> taches = new ArrayList<>();
-        String sys = systeme != null ? systeme.toLowerCase() : "";
+        try {
+            long start    = System.currentTimeMillis();
+            var  response = restTemplate.postForEntity(url, request, Map.class);
+            log.info("⏱ Réponse IA en {}ms", System.currentTimeMillis() - start);
 
-        switch (sys) {
-            case "crm":
-                taches.addAll(Arrays.asList(
-                        "Analyser les logs du système CRM",
-                        "Vérifier les intégrations CRM",
-                        "Tester les workflows CRM",
-                        "Valider la correction"
-                ));
-                break;
-            case "sap":
-                taches.addAll(Arrays.asList(
-                        "Vérifier les logs SAP",
-                        "Contrôler les interfaces IDOC",
-                        "Valider la configuration SAP",
-                        "Tester les flux corrigés"
-                ));
-                break;
-            case "billing":
-                taches.addAll(Arrays.asList(
-                        "Analyser les transactions en échec",
-                        "Vérifier les règles de calcul",
-                        "Corriger les transactions bloquées",
-                        "Valider avec l'équipe finance"
-                ));
-                break;
-            case "authentication":
-                taches.addAll(Arrays.asList(
-                        "Vérifier les services d'authentification",
-                        "Contrôler les certificats SSL",
-                        "Analyser les logs d'accès",
-                        "Tester la connexion"
-                ));
-                break;
-            default:
-                taches.addAll(Arrays.asList(
-                        "Analyser le problème",
-                        "Diagnostiquer la cause",
-                        "Appliquer la correction",
-                        "Tester la résolution"
-                ));
-                break;
-        }
-        return taches;
-    }
-
-    /**
-     * Obtient la répartition des tâches
-     */
-    public Map<String, Object> getRepartitionTaches(List<Tache> taches) {
-        Map<String, Object> repartition = new HashMap<>();
-        Map<String, Integer> parMembre = new HashMap<>();
-
-        for (Tache tache : taches) {
-            if (tache.getAssigneA() != null) {
-                Membre membre = tache.getAssigneA();
-                String nomMembre = membre.getPrenom() + " " + membre.getNom();
-                parMembre.put(nomMembre, parMembre.getOrDefault(nomMembre, 0) + 1);
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                return response.getBody();
             }
+        } catch (Exception e) {
+            log.error("❌ Erreur appel API IA: {}", e.getMessage());
         }
-
-        repartition.put("parMembre", parMembre);
-        repartition.put("totalTaches", taches.size());
-        return repartition;
+        return null;
     }
 
-    /**
-     * Analyse un prompt texte
-     */
     public String analyze(String prompt) {
-        String aiServiceUrl = "http://localhost:8000/api/v1/analyze-text";
-
+        String url = "http://localhost:8000/api/v1/analyze-text";
         try {
             Map<String, String> request = new HashMap<>();
             request.put("prompt", prompt);
-
-            var response = restTemplate.postForEntity(aiServiceUrl, request, Map.class);
-
+            var response = restTemplate.postForEntity(url, request, Map.class);
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 return (String) response.getBody().getOrDefault("result", "Aucune solution trouvée");
             }
         } catch (Exception e) {
-            log.error("Erreur appel IA: {}", e.getMessage());
+            log.error("Erreur IA: {}", e.getMessage());
         }
-
         return "Service IA indisponible";
+    }
+
+    private Equipe getEquipeFromDatabase(String systeme) {
+        if (systeme == null || systeme.isBlank()) return null;
+
+        List<Equipe> equipes = equipeRepository.findBySystemeAssocieIgnoreCase(systeme);
+        if (!equipes.isEmpty()) return equipes.get(0);
+
+        equipes = equipeRepository.findByNomContainingIgnoreCase(systeme);
+        if (!equipes.isEmpty()) return equipes.get(0);
+
+        return equipeRepository.findByNom("IT Support").orElse(null);
+    }
+
+    private Priorite convertPriority(String priority) {
+        if (priority == null) return Priorite.MOYENNE;
+        return switch (priority.toUpperCase()) {
+            case "BASSE",   "LOW"      -> Priorite.BASSE;
+            case "HAUTE",   "HIGH"     -> Priorite.HAUTE;
+            case "CRITIQUE","CRITICAL" -> Priorite.CRITIQUE;
+            default                    -> Priorite.MOYENNE;
+        };
+    }
+
+    private List<String> getTachesDescriptions(String systeme, String description) {
+        String sys = systeme != null ? systeme.toLowerCase() : "";
+        return switch (sys) {
+            case "crm"            -> List.of(
+                    "Analyser les logs du système CRM",
+                    "Vérifier les intégrations CRM",
+                    "Tester les workflows CRM"
+            );
+            case "sap"            -> List.of(
+                    "Vérifier les logs SAP",
+                    "Contrôler les interfaces IDOC",
+                    "Valider la configuration SAP"
+            );
+            case "billing"        -> List.of(
+                    "Analyser les transactions en échec",
+                    "Vérifier les règles de calcul",
+                    "Corriger les transactions bloquées"
+            );
+            case "authentication" -> List.of(
+                    "Vérifier les services d'authentification",
+                    "Contrôler les certificats SSL",
+                    "Analyser les logs d'accès"
+            );
+            default               -> List.of(
+                    "Analyser le problème signalé",
+                    "Diagnostiquer la cause racine",
+                    "Appliquer la correction"
+            );
+        };
+    }
+
+    private AIAnalyzeResponse buildError(String message) {
+        log.error("❌ {}", message);
+        return AIAnalyzeResponse.builder()
+                .success(false)
+                .error(message)
+                .build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> castList(Object obj) {
+        if (obj instanceof List<?>) return (List<String>) obj;
+        return new ArrayList<>();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> castListOfMaps(Object obj) {
+        if (obj instanceof List<?>) return (List<Map<String, Object>>) obj;
+        return new ArrayList<>();
+    }
+
+    private int getInt(Object obj, int defaultValue) {
+        if (obj instanceof Number) return ((Number) obj).intValue();
+        return defaultValue;
     }
 }

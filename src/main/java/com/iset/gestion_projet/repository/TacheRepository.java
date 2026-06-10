@@ -7,47 +7,27 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 
-public interface TacheRepository
-        extends JpaRepository<Tache, Long> {
+public interface TacheRepository extends JpaRepository<Tache, Long> {
 
-    // ── Par sous-ticket ───────────────────────────────
+    // ── Par sous-ticket ───────────────────────────────────────────
     List<Tache> findBySousTicketId(Long sousTicketId);
 
-    // ── Par assignee direct (User) ────────────────────
+    // ── Par assignee (User uniquement maintenant) ─────────────────
     List<Tache> findByAssigneeId(Long userId);
 
-    // ── Par membre IA (Membre) ────────────────────────
-    List<Tache> findByAssigneAId(Long membreId);
-
-    // ✅ Toutes les tâches d'un user
-    // Cherche via User (assignee) OU Membre (assigneA) par email
-    // LEFT JOIN pour éviter NullPointerException si l'un est null
+    // ✅ Toutes les tâches d'un user — un seul champ assignee
     @Query("""
-        SELECT DISTINCT t FROM Tache t
-        LEFT JOIN t.assignee  u
-        LEFT JOIN t.assigneA  m
-        WHERE u.id = :userId
-           OR m.email = (
-               SELECT usr.email
-               FROM User usr
-               WHERE usr.id = :userId
-           )
+        SELECT t FROM Tache t
+        WHERE t.assignee.id = :userId
     """)
-    List<Tache> findAllTachesForUser(
-            @Param("userId") Long userId
-    );
+    List<Tache> findAllTachesForUser(@Param("userId") Long userId);
 
-    // ── Toutes les tâches d'un ticket
-    //    (via les sous-tickets) ──────────────────────
+    // ── Toutes les tâches d'un ticket (via sous-tickets) ──────────
     @Query("""
         SELECT t FROM Tache t
         WHERE t.sousTicket.ticket.id = :ticketId
     """)
-    List<Tache> findByTicketId(
-            @Param("ticketId") Long ticketId
-    );
+    List<Tache> findByTicketId(@Param("ticketId") Long ticketId);
 
-
-    long countBySousTicketIdAndStatut(Long sousTicketId, String statut);
-
+    long countBySousTicketId(Long sousTicketId);
 }

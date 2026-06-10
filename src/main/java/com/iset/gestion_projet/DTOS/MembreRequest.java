@@ -3,11 +3,13 @@ package com.iset.gestion_projet.DTOS;
 import lombok.*;
 
 @Data
-@NoArgsConstructor @AllArgsConstructor
+@NoArgsConstructor
+@AllArgsConstructor
 public class MembreRequest {
+
     private String nom;
     private String prenom;
     private String email;
-    private String role;
-    private Long equipeId;
+    private String role;     // Optionnel, ignoré — toujours TECHNIQUE à la création
+    private Long   equipeId;
 }
